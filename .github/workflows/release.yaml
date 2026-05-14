@@ -1,0 +1,132 @@
+name: Module Release
+
+on:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - 'CHANGELOG.md'
+
+permissions:
+  contents: write
+
+jobs:
+  # ── Unit tests ─────────────────────────────────────────────────────────────
+  # Runs terraform test with mock_provider — no real AWS credentials required.
+  # Release is blocked until every test passes.
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.14"
+
+      - name: Terraform Init
+        run: terraform init
+
+      - name: Run unit tests
+        run: terraform test
+
+  # ── Semantic versioning & tag push ─────────────────────────────────────────
+  release:
+    runs-on: ubuntu-latest
+    needs: test
+    outputs:
+      new_version: ${{ steps.new_version.outputs.new_version }}
+      bump: ${{ steps.version_bump.outputs.bump }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      # ── Step 1: Resolve latest semver tag ─────────────────────────────────
+      - name: Get latest tag
+        id: get_tag
+        run: |
+          LATEST_TAG=$(git tag -l "v[0-9]*.[0-9]*.[0-9]*" | sort -V | tail -n 1)
+          if [ -z "$LATEST_TAG" ]; then
+            LATEST_TAG="v0.0.0"
+          fi
+          echo "latest_tag=$LATEST_TAG" >> "$GITHUB_OUTPUT"
+          echo "Latest tag: $LATEST_TAG"
+
+      # ── Step 2: Parse commit message → bump type ───────────────────────────
+      # Conventional Commits rules:
+      #   feat!: / BREAKING CHANGE  → MAJOR
+      #   feat:                     → MINOR
+      #   fix:                      → PATCH
+      - name: Determine version bump
+        id: version_bump
+        run: |
+          COMMIT_MSG=$(git log -1 --pretty=%B)
+          echo "Commit message:"
+          echo "$COMMIT_MSG"
+
+          if echo "$COMMIT_MSG" | grep -qE "^(feat|fix|refactor|perf|chore)(\(.+\))?!:|^BREAKING CHANGE:"; then
+            echo "bump=major" >> "$GITHUB_OUTPUT"
+            echo "Bump type: MAJOR"
+          elif echo "$COMMIT_MSG" | grep -qE "^feat(\(.+\))?:"; then
+            echo "bump=minor" >> "$GITHUB_OUTPUT"
+            echo "Bump type: MINOR"
+          elif echo "$COMMIT_MSG" | grep -qE "^(fix|perf|refactor)(\(.+\))?:"; then
+            echo "bump=patch" >> "$GITHUB_OUTPUT"
+            echo "Bump type: PATCH"
+          else
+            echo "bump=none" >> "$GITHUB_OUTPUT"
+            echo "Bump type: NONE (commit does not follow Conventional Commits)"
+          fi
+
+      # ── Step 3: Calculate new semver ──────────────────────────────────────
+      - name: Calculate new version
+        id: new_version
+        if: steps.version_bump.outputs.bump != 'none'
+        run: |
+          VERSION="${{ steps.get_tag.outputs.latest_tag }}"
+          VERSION="${VERSION#v}"
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$VERSION"
+
+          case "${{ steps.version_bump.outputs.bump }}" in
+            major) MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0 ;;
+            minor) MINOR=$((MINOR + 1)); PATCH=0 ;;
+            patch) PATCH=$((PATCH + 1)) ;;
+          esac
+
+          NEW_VERSION="v${MAJOR}.${MINOR}.${PATCH}"
+          echo "new_version=$NEW_VERSION" >> "$GITHUB_OUTPUT"
+          echo "New version: $NEW_VERSION"
+
+      # ── Step 4: Create annotated tag and push ────────────────────────────
+      - name: Configure git identity
+        if: steps.version_bump.outputs.bump != 'none'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Create annotated tag
+        if: steps.version_bump.outputs.bump != 'none'
+        run: |
+          NEW_VERSION="${{ steps.new_version.outputs.new_version }}"
+          LATEST_TAG="${{ steps.get_tag.outputs.latest_tag }}"
+          DATE=$(date -u +%Y-%m-%d)
+
+          if [ "$LATEST_TAG" = "v0.0.0" ]; then
+            COMMITS=$(git log --pretty=format:"- %s" --no-merges | head -20)
+          else
+            COMMITS=$(git log "${LATEST_TAG}..HEAD" --pretty=format:"- %s" --no-merges | head -20)
+          fi
+
+          printf 'Release %s (%s)\n\n%s\n' "$NEW_VERSION" "$DATE" "$COMMITS" > tag_message.txt
+          git tag -a "$NEW_VERSION" -F tag_message.txt
+          rm tag_message.txt
+
+      - name: Push tag
+        if: steps.version_bump.outputs.bump != 'none'
+        run: |
+          git push origin "${{ steps.new_version.outputs.new_version }}"

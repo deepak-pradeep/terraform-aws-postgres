@@ -1,0 +1,83 @@
+name: PR Title Check for Standard Module release
+
+on:
+  pull_request:
+    types:
+      - opened
+      - edited
+      - synchronize
+
+permissions:
+  pull-requests: read
+
+jobs:
+  check-title:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate PR title follows Conventional Commits
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          # Allowed prefixes — must match what release.yaml uses for version bumping:
+          #   feat!: / BREAKING CHANGE  -> major
+          #   feat:                     -> minor
+          #   fix: / perf: / refactor:  -> patch
+          #   chore:                    -> no release (but still valid)
+          PATTERN="^(feat|fix|refactor|perf|chore|notag)(\(.+\))?!?:.+"
+
+          echo "PR title: $PR_TITLE"
+
+          if echo "$PR_TITLE" | grep -qE "$PATTERN"; then
+            echo "PR title is valid."
+          else
+            echo ""
+            echo "╔══════════════════════════════════════════════════════════════════╗"
+            echo "║              INVALID PR TITLE                               ║"
+            echo "╚══════════════════════════════════════════════════════════════════╝"
+            echo ""
+            echo "  Your PR title: \"$PR_TITLE\""
+            echo ""
+            echo "  This repository uses Conventional Commits to automatically version"
+            echo "  and release the Terraform module. When a PR is merged, the PR title"
+            echo "  becomes the commit message on main — which is what drives the release."
+            echo ""
+            echo "  A missing or incorrect title format means the module will either get"
+            echo "  the wrong version bump, or no release will be triggered at all."
+            echo ""
+            echo "──────────────────────────────────────────────────────────────────────"
+            echo "  REQUIRED FORMAT"
+            echo "──────────────────────────────────────────────────────────────────────"
+            echo ""
+            echo "    <type>[optional scope]: <short description>"
+            echo ""
+            echo "──────────────────────────────────────────────────────────────────────"
+            echo "  ALLOWED TYPES & THEIR RELEASE IMPACT"
+            echo "──────────────────────────────────────────────────────────────────────"
+            echo ""
+            echo "    feat:       → MINOR version bump  (new feature, backwards-compatible)"
+            echo "    fix:        → PATCH version bump  (bug fix)"
+            echo "    refactor:   → PATCH version bump  (code change, no feature/fix)"
+            echo "    perf:       → PATCH version bump  (performance improvement)"
+            echo "    chore:      → NO release          (maintenance, deps, docs)"
+            echo "    <type>!:    → MAJOR version bump  (breaking change — any type with !)"
+            echo ""
+            echo "──────────────────────────────────────────────────────────────────────"
+            echo "  EXAMPLES"
+            echo "──────────────────────────────────────────────────────────────────────"
+            echo ""
+            echo "    ✅  feat: add support for VPC peering"
+            echo "    ✅  fix(iam): correct role trust policy ARN"
+            echo "    ✅  refactor: simplify variable defaults"
+            echo "    ✅  chore: update AWS provider version"
+            echo "    ✅  feat!: rename input variables  ← breaking change"
+            echo ""
+            echo "    ❌  Fix bug in IAM role            ← missing type prefix"
+            echo "    ❌  WIP: testing something         ← 'WIP' is not an allowed type"
+            echo "    ❌  feat - add new variable        ← use colon (:) not dash (-)"
+            echo ""
+            echo "──────────────────────────────────────────────────────────────────────"
+            echo ""
+            echo "  Update your PR title and this check will re-run automatically."
+            echo ""
+            exit 1
+          fi
